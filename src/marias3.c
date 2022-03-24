@@ -422,10 +422,13 @@ uint8_t ms3_put(ms3_st *ms3, const char *bucket, const char *key,
     return MS3_ERR_PARAMETER;
   }
 
+  // TODO HBW why?
+#if 0
   if (length == 0)
   {
     return MS3_ERR_NO_DATA;
   }
+#endif
 
   // mhash can't hash more than 4GB it seems
   if (length > UINT32_MAX)
