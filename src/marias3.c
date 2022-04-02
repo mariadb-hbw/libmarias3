@@ -431,6 +431,7 @@ uint8_t ms3_put(ms3_st *ms3, const char *bucket, const char *key,
 #endif
 
   // mhash can't hash more than 4GB it seems
+  // TODO HBW revisit for multipart async uploads
   if (length > UINT32_MAX)
   {
     return MS3_ERR_TOO_BIG;
