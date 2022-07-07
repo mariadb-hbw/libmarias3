@@ -56,7 +56,6 @@ struct ms3_st
 
   size_t buffer_chunk_size;
   CURL *curl;
-  CURLM *curl_multi;
   char *last_error;
   bool use_http;
   bool disable_verification;

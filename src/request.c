@@ -707,9 +707,12 @@ static size_t body_callback(void *buffer, size_t size,
   return nitems * size;
 }
 
-uint8_t prepare_request(request_context_t *context)
+uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
+                        const char *object, const char *source_bucket, const char *source_object,
+                        const char *filter, const uint8_t *data, size_t data_size,
+                        char *continuation,
+                        void *ret_ptr)
 {
-  ms3_st *ms3 = NULL;
   CURL *curl = NULL;
   struct curl_slist *headers = NULL;
   uint8_t res = 0;
@@ -718,9 +721,8 @@ uint8_t prepare_request(request_context_t *context)
   char *path = NULL;
   char *query = NULL;
   struct put_buffer_st post_data;
+  CURLcode curl_res;
   long response_code = 0;
-
-  ms3 = context->ms3;
 
   mem.data = NULL;
   mem.length = 0;
@@ -831,14 +833,7 @@ uint8_t prepare_request(request_context_t *context)
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_callback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&mem);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
-
-  return res;
-}
-
-uint8_t process_request(request_context_t *context, CURLcode curl_res)
-{
-  uint8_t res = 0;
-  CURL *curl = context->ms3->curl;
+  curl_res = curl_easy_perform(curl);
 
   if (curl_res != CURLE_OK)
   {
@@ -905,20 +900,14 @@ uint8_t process_request(request_context_t *context, CURLcode curl_res)
 
       if (cont)
       {
-        // TODO HBW async
-        if (context->async)
+        res = execute_request(ms3, cmd, bucket, object, source_bucket, source_object,
+                              filter, data, data_size, cont,
+                              NULL);
+        if (res)
         {
+          return res;
         }
-        else
-        {
-          res = execute_request(ms3, cmd, bucket, object, source_bucket, source_object,
-                                filter, data, data_size, cont,
-                                NULL);
-          if (res)
-          {
-            return res;
-          }
-        }
+
         ms3_cfree(cont);
       }
 
@@ -975,29 +964,4 @@ uint8_t process_request(request_context_t *context, CURLcode curl_res)
   curl_slist_free_all(headers);
 
   return res;
-}
-
-uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
-                        const char *object, const char *source_bucket, const char *source_object,
-                        const char *filter, const uint8_t *data, size_t data_size,
-                        char *continuation,
-                        void *ret_ptr)
-{
-  uint8_t res = 0;
-  request_context_t context;
-
-  memset(&context, 0, sizeof(context));
-  context.ms3 = ms3;
-  context.async = false;
-  context.cmd = cmd;
-
-  res = prepare_request(&context);
-  if (res)
-  {
-    return res;
-  }
-
-  CURLcode curl_res = curl_easy_perform(context.curl);
-
-  return process_request(&context, curl_res);
 }

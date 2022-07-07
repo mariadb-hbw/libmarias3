@@ -203,7 +203,6 @@ ms3_st *ms3_init(const char *s3key, const char *s3secret,
   ms3->buffer_chunk_size = READ_BUFFER_DEFAULT_SIZE;
 
   ms3->curl = curl_easy_init();
-  ms3->curl_multi = NULL;
   ms3->last_error = NULL;
   ms3->use_http = false;
   ms3->disable_verification = false;
@@ -338,10 +337,6 @@ void ms3_deinit(ms3_st *ms3)
   ms3_cfree(ms3->sts_region);
   ms3_cfree(ms3->iam_role_arn);
   curl_easy_cleanup(ms3->curl);
-  if (ms3->curl_multi)
-  {
-    curl_multi_cleanup(ms3->curl_multi);
-  }
   ms3_cfree(ms3->last_error);
   ms3_cfree(ms3->path_buffer);
   ms3_cfree(ms3->query_buffer);
