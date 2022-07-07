@@ -54,6 +54,15 @@ enum command_t
 
 typedef enum command_t command_t;
 
+struct request_context_t
+{
+  ms3_st *ms3;
+  bool async;
+  command_t cmd;
+};
+
+typedef struct request_context_t request_context_t;
+
 struct ms3_st;
 
 uint8_t execute_request(ms3_st *ms3, command_t command, const char *bucket,
@@ -61,3 +70,9 @@ uint8_t execute_request(ms3_st *ms3, command_t command, const char *bucket,
                         const char *filter, const uint8_t *data, size_t data_size,
                         char *continuation,
                         void *ret_ptr);
+
+uint8_t execute_request_async(ms3_st *ms3, command_t command, const char *bucket,
+                              const char *object, const char *source_bucket, const char *source_object,
+                              const char *filter, const uint8_t *data, size_t data_size,
+                              char *continuation,
+                              void *ret_ptr);
