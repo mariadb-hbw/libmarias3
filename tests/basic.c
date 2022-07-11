@@ -145,7 +145,7 @@ int main(int argc, char *argv[])
 
   res = ms3_get(ms3, s3bucket, "test/basic_thread.txt", &data, &length);
   ASSERT_EQ_(res, 0, "Result: %u", res);
-  ASSERT_EQ(length, 26);
+  ASSERT_EQ_(length, 26, "Length: %zu", length);
   ASSERT_STREQ((char *)data, test_string);
 
   for (i = 0; i <= 3; i++)

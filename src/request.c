@@ -707,33 +707,28 @@ static size_t body_callback(void *buffer, size_t size,
   return nitems * size;
 }
 
-uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
+uint8_t prepare_request(ms3_st *ms3, request_context_t *context, command_t cmd, const char *bucket,
                         const char *object, const char *source_bucket, const char *source_object,
                         const char *filter, const uint8_t *data, size_t data_size,
                         char *continuation,
                         void *ret_ptr)
 {
-  CURL *curl = NULL;
-  struct curl_slist *headers = NULL;
+  CURL *curl = ms3->curl;
   uint8_t res = 0;
-  struct memory_buffer_st mem;
   uri_method_t method;
   char *path = NULL;
   char *query = NULL;
   struct put_buffer_st post_data;
-  CURLcode curl_res;
-  long response_code = 0;
 
-  mem.data = NULL;
-  mem.length = 0;
-  mem.alloced = 1;
-  mem.buffer_chunk_size = ms3->buffer_chunk_size;
+  memset(context, 0, sizeof(*context));
+  context->ms3 = ms3;
+  context->headers = NULL;
+  context->mem.alloced = 1;
+  context->mem.buffer_chunk_size = ms3->buffer_chunk_size;
 
   post_data.data = (uint8_t *) data;
   post_data.length = data_size;
   post_data.offset = 0;
-
-  curl = ms3->curl;
 
   if (!ms3->first_run)
   {
@@ -793,7 +788,6 @@ uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
     case MS3_CMD_ASSUME_ROLE:
     default:
       ms3debug("Bad cmd detected");
-      ms3_cfree(mem.data);
 
       return MS3_ERR_IMPOSSIBLE;
   }
@@ -801,20 +795,18 @@ uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
   if (ms3->iam_role)
   {
       ms3debug("Using assumed role: %s",ms3->iam_role);
-      res = build_request_headers(curl, &headers, ms3->base_domain, ms3->region,
+      res = build_request_headers(curl, &context->headers, ms3->base_domain, ms3->region,
                                   ms3->role_key, ms3->role_secret, path, query, method, bucket, source_bucket,
                                   source_object, &post_data, ms3->protocol_version, ms3->role_session_token);
   }
   else
   {
-      res = build_request_headers(curl, &headers, ms3->base_domain, ms3->region,
+      res = build_request_headers(curl, &context->headers, ms3->base_domain, ms3->region,
                                   ms3->s3key, ms3->s3secret, path, query, method, bucket, source_bucket,
                                   source_object, &post_data, ms3->protocol_version, NULL);
   }
   if (res)
   {
-    ms3_cfree(mem.data);
-    curl_slist_free_all(headers);
 
     return res;
   }
@@ -831,16 +823,25 @@ uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
 
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_callback);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&mem);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&context->mem);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
-  curl_res = curl_easy_perform(curl);
+
+  return res;
+}
+
+uint8_t validate_response(request_context_t *context, CURLcode curl_res)
+{
+  uint8_t res = 0;
+  CURL *curl = context->ms3->curl;
+  long response_code = 0;
+
+  uint8_t *data = context->mem.data;
+  size_t length = context->mem.length;
 
   if (curl_res != CURLE_OK)
   {
     ms3debug("Curl error: %s", curl_easy_strerror(curl_res));
-    set_error(ms3, curl_easy_strerror(curl_res));
-    ms3_cfree(mem.data);
-    curl_slist_free_all(headers);
+    set_error(context->ms3, curl_easy_strerror(curl_res));
 
     return MS3_ERR_REQUEST_ERROR;
   }
@@ -850,118 +851,43 @@ uint8_t execute_request(ms3_st *ms3, command_t cmd, const char *bucket,
 
   if (response_code == 404)
   {
-    char *message = parse_error_message((char *)mem.data, mem.length);
+    char *message = parse_error_message((char *)data, length);
 
     if (message)
     {
       ms3debug("Response message: %s", message);
     }
 
-    set_error_nocopy(ms3, message);
+    set_error_nocopy(context->ms3, message);
     res = MS3_ERR_NOT_FOUND;
   }
   else if (response_code == 403)
   {
-    char *message = parse_error_message((char *)mem.data, mem.length);
+    char *message = parse_error_message((char *)data, length);
 
     if (message)
     {
       ms3debug("Response message: %s", message);
     }
 
-    set_error_nocopy(ms3, message);
+    set_error_nocopy(context->ms3, message);
     res = MS3_ERR_AUTH;
   }
   else if (response_code >= 400)
   {
-    char *message = parse_error_message((char *)mem.data, mem.length);
+    char *message = parse_error_message((char *)data, length);
 
     if (message)
     {
       ms3debug("Response message: %s", message);
     }
 
-    set_error_nocopy(ms3, message);
+    set_error_nocopy(context->ms3, message);
     res = MS3_ERR_SERVER;
-    if (ms3->iam_role)
+    if (context->ms3->iam_role)
     {
       res = MS3_ERR_AUTH_ROLE;
     }
   }
-
-  switch (cmd)
-  {
-    case MS3_CMD_LIST_RECURSIVE:
-    case MS3_CMD_LIST:
-    {
-      char *cont = NULL;
-      parse_list_response((const char *)mem.data, mem.length, &ms3->list_container, ms3->list_version,
-                          &cont);
-
-      if (cont)
-      {
-        res = execute_request(ms3, cmd, bucket, object, source_bucket, source_object,
-                              filter, data, data_size, cont,
-                              NULL);
-        if (res)
-        {
-          return res;
-        }
-
-        ms3_cfree(cont);
-      }
-
-      ms3_cfree(mem.data);
-      break;
-    }
-
-    case MS3_CMD_COPY:
-    case MS3_CMD_PUT:
-    {
-      ms3_cfree(mem.data);
-      break;
-    }
-
-    case MS3_CMD_GET:
-    {
-      struct memory_buffer_st *buf = (struct memory_buffer_st *) ret_ptr;
-
-      if (res)
-      {
-        ms3_cfree(mem.data);
-      }
-      else
-      {
-        buf->data = mem.data;
-        buf->length = mem.length;
-      }
-
-      break;
-    }
-
-    case MS3_CMD_DELETE:
-    {
-      ms3_cfree(mem.data);
-      break;
-    }
-
-    case MS3_CMD_HEAD:
-    {
-      ms3_cfree(mem.data);
-      break;
-    }
-
-    case MS3_CMD_LIST_ROLE:
-    case MS3_CMD_ASSUME_ROLE:
-    default:
-    {
-      ms3_cfree(mem.data);
-      ms3debug("Bad cmd detected");
-      res = MS3_ERR_IMPOSSIBLE;
-    }
-  }
-
-  curl_slist_free_all(headers);
-
   return res;
 }

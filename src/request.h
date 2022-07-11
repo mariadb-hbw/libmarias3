@@ -54,10 +54,20 @@ enum command_t
 
 typedef enum command_t command_t;
 
+struct request_context_t
+{
+  ms3_st *ms3;
+  struct curl_slist *headers;
+  struct memory_buffer_st mem;
+};
+
+typedef struct request_context_t request_context_t;
+
 struct ms3_st;
 
-uint8_t execute_request(ms3_st *ms3, command_t command, const char *bucket,
+uint8_t prepare_request(ms3_st *ms3, request_context_t *context, command_t command, const char *bucket,
                         const char *object, const char *source_bucket, const char *source_object,
                         const char *filter, const uint8_t *data, size_t data_size,
                         char *continuation,
                         void *ret_ptr);
+uint8_t validate_response(request_context_t *context, CURLcode curl_res);

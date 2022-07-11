@@ -379,6 +379,9 @@ uint8_t ms3_list_dir(ms3_st *ms3, const char *bucket, const char *prefix,
                      ms3_list_st **list)
 {
   uint8_t res = 0;
+  char *cont = NULL;
+  CURLcode curl_res;
+  request_context_t req;
 
   if (!ms3 || !bucket || !list)
   {
@@ -386,10 +389,37 @@ uint8_t ms3_list_dir(ms3_st *ms3, const char *bucket, const char *prefix,
   }
 
   list_free(ms3);
-  res = execute_request(ms3, MS3_CMD_LIST, bucket, NULL, NULL, NULL, prefix, NULL,
-                        0, NULL,
-                        NULL);
+
+  do {
+    res = prepare_request(ms3, &req, MS3_CMD_LIST, bucket, NULL, NULL, NULL,
+                          prefix, NULL, 0, cont, NULL);
+
+    ms3_cfree(cont);
+    cont = NULL;
+
+    if (res)
+    {
+      ms3_cfree(req.mem.data);
+      curl_slist_free_all(req.headers);
+      break;
+    }
+
+    curl_res = curl_easy_perform(ms3->curl);
+    res = validate_response(&req, curl_res);
+    if (res)
+    {
+      ms3_cfree(req.mem.data);
+      curl_slist_free_all(req.headers);
+      break;
+    }
+
+    parse_list_response((const char *)req.mem.data, req.mem.length,
+                        &ms3->list_container, ms3->list_version, &cont);
+    ms3_cfree(req.mem.data);
+    curl_slist_free_all(req.headers);
+  } while (cont != NULL);
   *list = ms3->list_container.start;
+
   return res;
 }
 
@@ -397,6 +427,9 @@ uint8_t ms3_list(ms3_st *ms3, const char *bucket, const char *prefix,
                  ms3_list_st **list)
 {
   uint8_t res = 0;
+  char *cont = NULL;
+  CURLcode curl_res;
+  request_context_t req;
 
   if (!ms3 || !bucket || !list)
   {
@@ -404,11 +437,37 @@ uint8_t ms3_list(ms3_st *ms3, const char *bucket, const char *prefix,
   }
 
   list_free(ms3);
-  res = execute_request(ms3, MS3_CMD_LIST_RECURSIVE, bucket, NULL, NULL, NULL,
-                        prefix, NULL,
-                        0, NULL,
-                        NULL);
+
+  do {
+    res = prepare_request(ms3, &req, MS3_CMD_LIST_RECURSIVE, bucket, NULL,
+                          NULL, NULL, prefix, NULL, 0, cont, NULL);
+
+    ms3_cfree(cont);
+    cont = NULL;
+
+    if (res)
+    {
+      ms3_cfree(req.mem.data);
+      curl_slist_free_all(req.headers);
+      break;
+    }
+
+    curl_res = curl_easy_perform(ms3->curl);
+    res = validate_response(&req, curl_res);
+    if (res)
+    {
+      ms3_cfree(req.mem.data);
+      curl_slist_free_all(req.headers);
+      break;
+    }
+
+    parse_list_response((const char *)req.mem.data, req.mem.length,
+                        &ms3->list_container, ms3->list_version, &cont);
+    ms3_cfree(req.mem.data);
+    curl_slist_free_all(req.headers);
+  } while (cont != NULL);
   *list = ms3->list_container.start;
+
   return res;
 }
 
@@ -416,6 +475,8 @@ uint8_t ms3_put(ms3_st *ms3, const char *bucket, const char *key,
                 const uint8_t *data, size_t length)
 {
   uint8_t res;
+  request_context_t req;
+  CURLcode curl_res;
 
   if (!ms3 || !bucket || !key || !data)
   {
@@ -437,10 +498,19 @@ uint8_t ms3_put(ms3_st *ms3, const char *bucket, const char *key,
     return MS3_ERR_TOO_BIG;
   }
 
-  res = execute_request(ms3, MS3_CMD_PUT, bucket, key, NULL, NULL, NULL, data,
-                        length, NULL,
-                        NULL);
+  res = prepare_request(ms3, &req, MS3_CMD_PUT, bucket, key, NULL, NULL, NULL,
+                        data, length, NULL, NULL);
+  if (res)
+  {
+    goto cleanup;
+  }
 
+  curl_res = curl_easy_perform(ms3->curl);
+  res = validate_response(&req, curl_res);
+
+cleanup:
+  ms3_cfree(req.mem.data);
+  curl_slist_free_all(req.headers);
   return res;
 }
 
@@ -448,20 +518,38 @@ uint8_t ms3_get(ms3_st *ms3, const char *bucket, const char *key,
                 uint8_t **data, size_t *length)
 {
   uint8_t res = 0;
-  struct memory_buffer_st buf;
-
-  buf.data = NULL;
-  buf.length = 0;
+  request_context_t req;
+  CURLcode curl_res;
 
   if (!ms3 || !bucket || !key || key[0] == '\0' || !data || !length)
   {
     return MS3_ERR_PARAMETER;
   }
+  res = prepare_request(ms3, &req, MS3_CMD_GET, bucket, key, NULL, NULL, NULL,
+                        NULL, 0, NULL, NULL);
+  if (res)
+  {
+    goto cleanup;
+  }
 
-  res = execute_request(ms3, MS3_CMD_GET, bucket, key, NULL, NULL, NULL, NULL, 0,
-                        NULL, &buf);
-  *data = buf.data;
-  *length = buf.length;
+  curl_res = curl_easy_perform(ms3->curl);
+  res = validate_response(&req, curl_res);
+  if (res)
+  {
+    goto cleanup;
+  }
+
+  *data = req.mem.data;
+  *length = req.mem.length;
+
+  curl_slist_free_all(req.headers);
+  return res;
+
+cleanup:
+  curl_slist_free_all(req.headers);
+  ms3_cfree(req.mem.data);
+  *data = NULL;
+  *length = 0;
   return res;
 }
 
@@ -469,14 +557,28 @@ uint8_t ms3_copy(ms3_st *ms3, const char *source_bucket, const char *source_key,
                  const char *dest_bucket, const char *dest_key)
 {
   uint8_t res = 0;
+  request_context_t req;
+  CURLcode curl_res;
 
   if (!ms3 || !source_bucket || !source_key || !dest_bucket || !dest_key)
   {
     return MS3_ERR_PARAMETER;
   }
 
-  res = execute_request(ms3, MS3_CMD_COPY, dest_bucket, dest_key, source_bucket,
-                        source_key, NULL, NULL, 0, NULL, NULL);
+  res = prepare_request(ms3, &req, MS3_CMD_COPY, dest_bucket, dest_key,
+                        source_bucket, source_key, NULL, NULL, 0, NULL,
+                        NULL);
+  if (res)
+  {
+    goto cleanup;
+  }
+
+  curl_res = curl_easy_perform(ms3->curl);
+  res = validate_response(&req, curl_res);
+
+cleanup:
+  ms3_cfree(req.mem.data);
+  curl_slist_free_all(req.headers);
   return res;
 }
 
@@ -505,15 +607,26 @@ uint8_t ms3_move(ms3_st *ms3, const char *source_bucket, const char *source_key,
 uint8_t ms3_delete(ms3_st *ms3, const char *bucket, const char *key)
 {
   uint8_t res;
+  request_context_t req;
+  CURLcode curl_res;
 
   if (!ms3 || !bucket || !key)
   {
     return MS3_ERR_PARAMETER;
   }
+  res = prepare_request(ms3, &req, MS3_CMD_DELETE, bucket, key, NULL, NULL,
+                        NULL, NULL, 0, NULL, NULL);
+  if (res)
+  {
+    goto cleanup;
+  }
 
-  res = execute_request(ms3, MS3_CMD_DELETE, bucket, key, NULL, NULL, NULL, NULL,
-                        0, NULL,
-                        NULL);
+  curl_res = curl_easy_perform(ms3->curl);
+  res = validate_response(&req, curl_res);
+
+cleanup:
+  ms3_cfree(req.mem.data);
+  curl_slist_free_all(req.headers);
   return res;
 }
 
@@ -521,15 +634,27 @@ uint8_t ms3_status(ms3_st *ms3, const char *bucket, const char *key,
                    ms3_status_st *status)
 {
   uint8_t res;
+  request_context_t req;
+  CURLcode curl_res;
 
   if (!ms3 || !bucket || !key || !status)
   {
     return MS3_ERR_PARAMETER;
   }
 
-  res = execute_request(ms3, MS3_CMD_HEAD, bucket, key, NULL, NULL, NULL, NULL, 0,
-                        NULL,
-                        status);
+  res = prepare_request(ms3, &req, MS3_CMD_HEAD, bucket, key, NULL, NULL, NULL,
+                        NULL, 0, NULL, status);
+  if (res)
+  {
+    goto cleanup;
+  }
+
+  curl_res = curl_easy_perform(ms3->curl);
+  res = validate_response(&req, curl_res);
+
+cleanup:
+  ms3_cfree(req.mem.data);
+  curl_slist_free_all(req.headers);
   return res;
 }
 
